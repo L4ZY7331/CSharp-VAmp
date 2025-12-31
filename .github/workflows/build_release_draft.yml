@@ -1,0 +1,141 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  PLAYWRIGHT_BROWSERS_PATH: 0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022] # WPF requires Windows
+
+    runs-on: ${{ matrix.os }}
+
+    name: Build ${{ matrix.os }} executable
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Get version from csproj
+        id: get_version
+        shell: pwsh
+        run: |
+          $content = Get-Content -Raw "CSharpVAmp.csproj"
+          $m = [regex]::Match($content, '<Version>\s*([^<\s]+)\s*</Version>')
+          if (-not $m.Success) { throw "Could not find <Version> in CSharpVAmp.csproj" }
+          "version=$($m.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Create date and file name env variable
+        shell: bash
+        run: |
+          export today=$(date +'%Y%m%d')
+          echo "output_filename=CSharpVAmp_v${{steps.get_version.outputs.version}}_${today}_${{runner.os}}-${{runner.arch}}" >> $GITHUB_ENV
+
+      - name: Build project
+        run: dotnet build --configuration Release
+
+      - name: Install Playwright browsers
+        run: pwsh bin/Release/net8.0-windows/playwright.ps1 install chromium
+
+      - name: Publish executable
+        run: dotnet publish --configuration Release --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+
+      - name: Copy additional files
+        shell: bash
+        run: |
+          mkdir -p publish/proxy
+          cp -r proxy/* publish/proxy/ 2>/dev/null || true
+          cp cvamp_logo.ico publish/ 2>/dev/null || true
+          cp appsettings.json publish/ 2>/dev/null || true
+
+      - name: Zip executable
+        uses: vimtor/action-zip@v1
+        with:
+          files: publish/
+          dest: ${{env.output_filename}}.zip
+
+      - name: Upload zipped artifact ${{ matrix.os }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{env.output_filename}}
+          path: ${{env.output_filename}}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    name: Create and publish release
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: '*'
+          merge-multiple: false
+
+      - name: List downloaded artifacts (debug)
+        run: |
+          echo "=== Artifact directory structure ==="
+          find artifacts -type f -name "*.zip" || echo "No ZIP files found"
+          echo ""
+          echo "=== All files in artifacts ==="
+          find artifacts -type f || echo "No files found"
+          echo ""
+          echo "=== Directory listing ==="
+          ls -laR artifacts/ || true
+
+      - name: Get version from tag
+        id: get_tag_version
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${TAG_VERSION#v}
+          echo "version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Find ZIP files
+        id: find_zips
+        run: |
+          ZIP_FILES=$(find artifacts -type f -name "*.zip" | tr '\n' ' ')
+          if [ -z "$ZIP_FILES" ]; then
+            echo "ERROR: No ZIP files found in artifacts directory!"
+            exit 1
+          fi
+          echo "files=$ZIP_FILES" >> $GITHUB_OUTPUT
+          echo "Found ZIP files: $ZIP_FILES"
+
+      - name: Create release with artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          name: CSharpVAmp ${{github.ref_name}}
+          body: |
+            ## CSharpVAmp ${{steps.get_tag_version.outputs.version}}
+            
+            ### Changes
+            - Automated build and release
+            
+            ### Downloads
+            - Windows executable included in the ZIP file
+            
+            ### Installation
+            1. Extract the ZIP file
+            2. Run the executable
+            3. Configure proxies in `proxy/proxy_list.txt`
+          prerelease: false
+          draft: false
+          files: ${{steps.find_zips.outputs.files}}

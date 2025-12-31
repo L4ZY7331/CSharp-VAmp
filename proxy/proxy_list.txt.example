@@ -1,0 +1,8 @@
+# Proxy list format
+# One proxy per line in format: ip:port:username:password
+# Or without authentication: ip:port
+#
+# Example:
+# 127.0.0.1:8080:myuser:mypass
+# 192.168.1.1:3128
+

@@ -1,0 +1,9 @@
+# Exclude GitHub workflows from language statistics
+.github/workflows/* linguist-vendored
+
+# Ensure C# files are properly detected
+*.cs linguist-language=C#
+*.csproj linguist-language=C#
+*.sln linguist-language=C#
+*.xaml linguist-language=XML
+

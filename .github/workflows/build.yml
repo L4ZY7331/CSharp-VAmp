@@ -1,0 +1,71 @@
+name: Build and Test
+
+on: [pull_request]
+
+env:
+  PLAYWRIGHT_BROWSERS_PATH: 0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022]
+
+    runs-on: ${{ matrix.os }}
+
+    name: Build ${{ matrix.os }} executable
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Get version from csproj
+      id: get_version
+      shell: pwsh
+      run: |
+        $content = Get-Content -Raw "CSharpVAmp.csproj"
+        $m = [regex]::Match($content, '<Version>\s*([^<\s]+)\s*</Version>')
+        if (-not $m.Success) { throw "Could not find <Version> in CSharpVAmp.csproj" }
+        "version=$($m.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Create date and file name env variable
+      shell: bash
+      run: |
+        export today=$(date +'%Y%m%d')
+        echo "output_filename=CSharpVAmp_v${{steps.get_version.outputs.version}}_${today}_${{runner.os}}-${{runner.arch}}" >> $GITHUB_ENV
+
+    - name: Build project
+      run: dotnet build --configuration Release
+
+    - name: Install Playwright browsers
+      run: pwsh bin/Release/net8.0-windows/playwright.ps1 install chromium
+
+    - name: Publish executable
+      run: dotnet publish --configuration Release --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+
+    - name: Copy additional files
+      shell: bash
+      run: |
+        mkdir -p publish/proxy
+        cp -r proxy/* publish/proxy/ 2>/dev/null || true
+        cp cvamp_logo.ico publish/ 2>/dev/null || true
+        cp appsettings.json publish/ 2>/dev/null || true
+
+    - name: Zip executable
+      uses: vimtor/action-zip@v1
+      with:
+        files: publish/
+        dest: ${{env.output_filename}}.zip
+
+    - name: Upload zipped artifact ${{ matrix.os }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{env.output_filename}}
+        path: ${{env.output_filename}}.zip
